@@ -1,10 +1,14 @@
+from zope.interface import implementer
 from twisted.internet import defer, reactor
 from twisted.web.client import readBody
 from twisted.web.resource import Resource
 from twisted.web.server import Site
 from twisted.trial.unittest import SkipTest
-from twisted.protocols.policies import ThrottlingFactory
+from twisted.internet.protocol import Protocol
+from twisted.python import log
+from twisted.internet import interfaces, task
 
+from collections import deque
 from txtorcon.circuit import Circuit
 from txtorcon.util import available_tcp_port
 
@@ -53,7 +57,108 @@ class TestCircuitEventListener(TorTestCase):
         assert len(circuit_lifecycle) == len(expected_states)
         assert [k['event'] for k in circuit_lifecycle] == expected_states
 
+class DelayDeque(object):
+    def __init__(self, maxlen, clock, handle_data):
+        self.maxlen = maxlen
+        self.clock = clock
+        self.handle_data = handle_data
 
+        self.turn_delay = 1
+        self.deque = deque(maxlen=self.maxlen)
+        self.is_ready = False
+        self.stopped = False
+        self.lazy_tail = defer.succeed(None)
+        self.clear_deque_timer = None
+        # XXX
+        self.clear_deque_duration = 10
+
+    def ready(self):
+        self.is_ready = True
+        self.stopped = False
+        self.turn_deque()
+
+    def pause(self):
+        self.is_ready = False
+        self.stopped = True
+
+    def stop_all_timers(self):
+        if self.clear_deque_timer.active():
+            self.clear_deque_timer.cancel()
+
+    def append(self, data):
+        if self.clear_deque_timer is None:
+            self.clear_deque_timer = self.clock.callLater(self.clear_deque_duration, self.deque.clear)
+        else:
+            if self.clear_deque_timer.active():
+                self.clear_deque_timer.reset(self.clear_deque_duration)
+            else:
+                self.clear_deque_timer = self.clock.callLater(self.clear_deque_duration, self.deque.clear)
+
+        self.deque.append(data)
+        if self.is_ready:
+            self.clock.callLater(0, self.turn_deque)
+
+    def turn_deque(self):
+        if self.stopped:
+            return
+        try:
+            data = self.deque.pop()
+        except IndexError:
+            self.lazy_tail.addCallback(lambda ign: defer.succeed(None))
+        else:
+            self.lazy_tail.addCallback(lambda ign: self.handle_data(data))
+            self.lazy_tail.addErrback(log.err)
+            self.lazy_tail.addCallback(lambda ign: task.deferLater(self.clock, self.turn_delay, self.turn_deque))
+
+            
+@implementer(interfaces.IPushProducer, interfaces.IConsumer)
+class ThrottlingProducerConsumer(Protocol, object):
+
+    def __init_(self):
+        # IConsumer
+        self.producer = None
+
+    def setConsumer(self, consumer):
+        # IPushProducer
+        consumer.registerProducer(self, streaming=True)
+        self.consumer = consumer
+
+    # XXX correct?
+    def logPrefix(self):
+        return 'ThrottlingProducerConsumer'
+
+    # IPProtocol
+    def dataReceived(self, data):
+        print "dataReceived"
+        self.consumer.write(data)
+
+    # IPushProducer
+
+    def pauseProducing(self):
+        print "pauseProducing"
+
+    def resumeProducing(self):
+        print "resumeProducing"
+
+    def stopProducing(self):
+        print "stopProducing"
+
+    # IConsumer
+    def write(self, data):
+        print "write"
+        self.transport.write(data)
+
+    def registerProducer(self, producer, streaming):
+        print "registerProducer"
+        assert streaming is True
+        self.producer = producer
+        self.producer.resumeProducing()
+
+    def unregisterProducer(self):
+        print "unregisterProducer"
+        self.producer.stopProducing()
+
+        
 class TestStreamBandwidthListener(TorTestCase):
     #skip = "broken tests"
 
@@ -71,7 +176,9 @@ class TestStreamBandwidthListener(TorTestCase):
 
         self.port = yield available_tcp_port(reactor)
         self.site = Site(DummyResource())
-        self.test_service = yield reactor.listenTCP(self.port, ThrottlingFactory(self.site, readLimit=1, writeLimit=1))
+        factory = ThrottlingProducerConsumer()
+        factory.setConsumer(self.site)
+        self.test_service = yield reactor.listenTCP(self.port, factory)
 
         self.not_enough_measurements = NotEnoughMeasurements(
             "Not enough measurements to calculate STREAM_BW samples.")
