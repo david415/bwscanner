@@ -15,14 +15,17 @@ class TorTestCase(unittest.TestCase):
          repeating path selection here.
     """
 
-    @defer.inlineCallbacks
     def setUp(self):
-        self.tor = yield build_tor_connection(
+        d = build_tor_connection(
             TCP4ClientEndpoint(reactor, 'localhost', int(
                 os.environ.get('CHUTNEY_CONTROL_PORT'))))
 
-        self.attacher = SOCKSClientStreamAttacher(self.tor)
-        yield self.tor.set_attacher(self.attacher, reactor)
+        def set_result(result):
+            self.tor = result
+            self.attacher = SOCKSClientStreamAttacher(self.tor)
+            return self.tor.set_attacher(self.attacher, reactor)
+        d.addCallback(set_result)
+        return d
 
     @property
     def routers(self):

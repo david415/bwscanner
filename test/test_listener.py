@@ -1,8 +1,12 @@
 from twisted.internet import defer, reactor
+from twisted.internet.endpoints import serverFromString
 from twisted.web.client import readBody
 from twisted.web.resource import Resource
 from twisted.web.server import Site
 from twisted.trial.unittest import SkipTest
+
+from twisted.protocols.policies import ThrottlingFactory
+
 from txtorcon.circuit import Circuit
 from txtorcon.util import available_tcp_port
 
@@ -12,10 +16,6 @@ from test.template import TorTestCase
 
 import random
 import time
-
-
-class NotEnoughMeasurements(SkipTest):
-    pass
 
 
 class FakeCircuit(Circuit):
@@ -53,13 +53,15 @@ class TestCircuitEventListener(TorTestCase):
 
 
 class TestStreamBandwidthListener(TorTestCase):
-    skip = "broken tests"
+    #skip = "broken tests"
 
-    @defer.inlineCallbacks
     def setUp(self):
-        yield super(TestStreamBandwidthListener, self).setUp()
+        d = super(TestStreamBandwidthListener, self).setUp()
         self.fetch_size = 8*2**20  # 8MB
-        self.stream_bandwidth_listener = yield StreamBandwidthListener(self.tor)
+        d.addCallback(lambda ign: StreamBandwidthListener(self.tor))
+        def set_result(result):
+            self.stream_bandwidth_listener = result
+        d.addCallback(set_result)
 
         class DummyResource(Resource):
             isLeaf = True
@@ -67,17 +69,32 @@ class TestStreamBandwidthListener(TorTestCase):
             def render_GET(self, request):
                 return 'a'*8*2**20
 
-        self.port = yield available_tcp_port(reactor)
-        self.site = Site(DummyResource())
-        self.test_service = yield reactor.listenTCP(self.port, self.site)
-
-        self.not_enough_measurements = NotEnoughMeasurements(
-            "Not enough measurements to calculate STREAM_BW samples.")
+        d.addCallback(lambda ign: available_tcp_port(reactor))
+        def set_port(result):
+            self.port = result
+            self.server_endpoint = serverFromString(reactor, "tcp:interface=127.0.0.1:%s" % self.port)
+            self.site = ThrottlingFactory(Site(DummyResource()), readLimit=1, writeLimit=1)
+            self.listen_d = self.server_endpoint.listen(self.site)
+            return self.listen_d
+        d.addCallback(set_port)
+        def is_connected(ignore):
+            print "meow1"
+            return None
+        d.addCallback(is_connected)
+        def fail_connect(f):
+            print "connect FAIL"
+            return f
+        d.addErrback(fail_connect)
+        return d
 
     @defer.inlineCallbacks
     def test_circ_bw(self):
         r = yield self.do_fetch()
+        print "CIRC %s" % (r['circ'],)
         bw_events = self.stream_bandwidth_listener.circ_bw_events.get(r['circ'])
+        import time
+        time.sleep(2)
+        print "events %s" % (bw_events,)
         assert bw_events
         # XXX: why are the counters reversed!? -> See StreamBandwidthListener
         #      docstring.
@@ -103,8 +120,7 @@ class TestStreamBandwidthListener(TorTestCase):
 
         # XXX: If the measurement happens in under 1 second, we will have one
         #      STREAM_BW, and will not be able to calculate BW samples.
-        if len(bw_events) == 1:
-            raise self.not_enough_measurements
+        assert len(bw_events) > 1
         bw_samples = [x for x in self.stream_bandwidth_listener.bw_samples(r['circ'])]
         assert bw_samples
         assert self.fetch_size/2 <= sum([x[0] for x in bw_samples]) <= self.fetch_size
@@ -117,9 +133,8 @@ class TestStreamBandwidthListener(TorTestCase):
         # XXX: these complete too quickly to sample sufficient bytes...
         assert bw_events
         assert self.fetch_size/4 <= sum([x[1] for x in bw_events]) <= self.fetch_size
+        assert len(bw_events) > 1
 
-        if len(bw_events) == 1:
-            raise self.not_enough_measurements
         circ_avg_bw = self.stream_bandwidth_listener.circ_avg_bw(r['circ'])
         assert circ_avg_bw is not None
         assert circ_avg_bw['path'] == r['circ'].path
@@ -148,4 +163,4 @@ class TestStreamBandwidthListener(TorTestCase):
     @defer.inlineCallbacks
     def tearDown(self):
         yield super(TestStreamBandwidthListener, self).tearDown()
-        yield self.test_service.stopListening()
+        self.listen_d.cancel()
