@@ -3,6 +3,8 @@ from twisted.web.client import readBody
 from twisted.web.resource import Resource
 from twisted.web.server import Site
 from twisted.trial.unittest import SkipTest
+from twisted.protocols.policies import ThrottlingFactory
+
 from txtorcon.circuit import Circuit
 from txtorcon.util import available_tcp_port
 
@@ -53,7 +55,7 @@ class TestCircuitEventListener(TorTestCase):
 
 
 class TestStreamBandwidthListener(TorTestCase):
-    skip = "broken tests"
+    #skip = "broken tests"
 
     @defer.inlineCallbacks
     def setUp(self):
@@ -69,7 +71,7 @@ class TestStreamBandwidthListener(TorTestCase):
 
         self.port = yield available_tcp_port(reactor)
         self.site = Site(DummyResource())
-        self.test_service = yield reactor.listenTCP(self.port, self.site)
+        self.test_service = yield reactor.listenTCP(self.port, ThrottlingFactory(self.site, readLimit=1, writeLimit=1))
 
         self.not_enough_measurements = NotEnoughMeasurements(
             "Not enough measurements to calculate STREAM_BW samples.")
