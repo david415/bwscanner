@@ -1,5 +1,5 @@
 from twisted.internet import defer, reactor
-from twisted.internet.endpoints import serverFromString
+from twisted.internet.endpoints import serverFromString, connectProtocol
 from twisted.web.client import readBody
 from twisted.web.resource import Resource
 from twisted.web.server import Site
@@ -73,8 +73,7 @@ class TestStreamBandwidthListener(TorTestCase):
         def set_port(result):
             self.port = result
             self.server_endpoint = serverFromString(reactor, "tcp:interface=127.0.0.1:%s" % self.port)
-            self.site = ThrottlingFactory(Site(DummyResource()), readLimit=1, writeLimit=1)
-            self.listen_d = self.server_endpoint.listen(self.site)
+            self.listen_d = connectProtocol(delayProtocol)
             return self.listen_d
         d.addCallback(set_port)
         def is_connected(ignore):
@@ -162,5 +161,6 @@ class TestStreamBandwidthListener(TorTestCase):
 
     @defer.inlineCallbacks
     def tearDown(self):
-        yield super(TestStreamBandwidthListener, self).tearDown()
         self.listen_d.cancel()
+        yield super(TestStreamBandwidthListener, self).tearDown()
+
