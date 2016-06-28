@@ -102,14 +102,18 @@ class DummyClientFactory(Factory):
         return self.protocol
 
 class TricklingProtocol(ProtocolWrapper):
-    
+
+    def delayedWrite(self, data, offset=0, size=1, delay=.1):
+        if offset >= len(data):
+            return
+        b = data[offset:offset+size] # maybe replace with twisted.python.compat.lazyByteSlice if you seek py3 compatibility
+        self.transport.write(b)
+        reactor.callLater(delay, self.delayedWrite, data, offset+1, size, delay)
+
     def write(self, data):
-        #ProtocolWrapper.write(self, data)
-        for b in data:
-            reactor.callLater(2, ProtocolWrapper.write, self, b)
+        self.delayedWrite(data)
 
     def writeSequence(self, seq):
-        #ProtocolWrapper.writeSequence(self, seq)
         for s in seq:
             self.write(s)
 
