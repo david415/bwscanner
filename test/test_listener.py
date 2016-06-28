@@ -85,127 +85,96 @@ class DelayDeque(object):
             self.lazy_tail.addErrback(log.err)
             self.lazy_tail.addCallback(lambda ign: task.deferLater(self.clock, self.turn_delay, self.turn_deque))
 
-class TrickleProtocol(ProtocolWrapper):
-    """
-    Protocol for L{TrickelFactory}.
-    """
-
-    def write(self, data):
-        print "trickle protocol write"
-        ProtocolWrapper.dataReceived(self, data)
-        #for b in data:
-        #    self.send_deque.append(b)
-
-    def writeSequence(self, seq):
-        print "trickle protocol write sequence"
-        ProtocolWrapper.writeSequence(self, seq)
-        #for data in seq:
-        #    self.write(data)
-
-    def dataReceived(self, data):
-        print "trickle protocol data received"
-        ProtocolWrapper.dataReceived(self, data)
-        #for b in data:
-        #    self.receive_deque.append(b)
-
-    def handleReceive(self, data):
-        print "trickel protocol handle received data"
-        ProtocolWrapper.dataReceived(self, data)
-
-    def handleSend(self, data):
-        print "tricket protocol handle send data"
-        ProtocolWrapper.write(self, data)
-
-    def registerProducer(self, producer, streaming):
-        print "trickle protocl register producer"
-        self.producer = producer
-        ProtocolWrapper.registerProducer(self, producer, streaming)
-
-    def unregisterProducer(self):
-        print "trickle protocol unregister producer"
-        del self.producer
-        ProtocolWrapper.unregisterProducer(self)
-
-class TrickleFactory(WrappingFactory):
-    """
-    Sends data in a slow trickle.
-    """
-
-    protocol = TrickleProtocol
-
-    def __init__(self, wrappedFactory):
-        print "trickle factory init"
-        WrappingFactory.__init__(self, wrappedFactory)
-        self.my_protocol = None
-
-    def buildProtocol(self, addr):
-        print "trickle factory build protocol"
-        self.my_protocol = WrappingFactory.buildProtocol(self, addr)
-        # XXX
-        #self.my_protocol.receive_deque = DelayDeque(100, reactor, self.my_protocol.handleReceive)
-        #self.my_protocol.receive_deque.ready()
-        #self.my_protocol.send_deque = DelayDeque(100, reactor, self.my_protocol.handleSend)
-        #self.my_protocol.send_deque.ready()
-        return self.my_protocol
-
-    def unregisterProtocol(self, p):
-        print "trickle factory unregister protocol"
-        WrappingFactory.unregisterProtocol(self, p)
 
 class DummyClientProtocol(Protocol):
     def connectionMade(self):
-        self.transport.write("hello\r\n")
+        self.transport.write("hello")
     def dataReceived(self, data):
-        print "client received data: %s" % (data,)
+        print "\nclient received data: %s" % (data,)
         #self.transport.loseConnection()
+    def connectionLost(self, reason):
+        self.connection_lost_d.callback(None)
 
 class DummyClientFactory(Factory):
     def buildProtocol(self, addr):
         self.protocol = DummyClientProtocol()
+        self.protocol.connection_lost_d = defer.Deferred()
         return self.protocol
 
-class DummyServerFactory(Factory):
+class TricklingProtocol(ProtocolWrapper):
+    
+    def write(self, data):
+        #ProtocolWrapper.write(self, data)
+        for b in data:
+            reactor.callLater(2, ProtocolWrapper.write, self, b)
+
+    def writeSequence(self, seq):
+        #ProtocolWrapper.writeSequence(self, seq)
+        for s in seq:
+            self.write(s)
+
+    def dataReceived(self, data):
+        ProtocolWrapper.dataReceived(self, data)
+
+    def connectionLost(self, reason):
+        self.connection_lost_d.callback(None)
+
+    def registerProducer(self, producer, streaming):
+        self.producer = producer
+        ProtocolWrapper.registerProducer(self, producer, streaming)
+
+    def unregisterProducer(self):
+        del self.producer
+        ProtocolWrapper.unregisterProducer(self)
+
+
+class DummyTricklingServerFactory(Factory):
+    def __init__(self):
+        self.protocols = {}
+
     def buildProtocol(self, addr):
-        self.protocol = DummyServerProtocol()
+        self.protocol = TricklingProtocol(self, DummyServerProtocol())
+        self.protocol.connection_lost_d = defer.Deferred()
         return self.protocol
+
+    def registerProtocol(self, p):
+        """
+        Called by protocol to register itself.
+        """
+        self.protocols[p] = 1
+
+    def unregisterProtocol(self, p):
+        """
+        Called by protocols when they go away.
+        """
+        del self.protocols[p]
 
 class DummyServerProtocol(Protocol):
     def connectionMade(self):
-        self.transport.write("hiya\r\n")
+        self.transport.write("hiya!")
     def dataReceived(self, data):
-        print "server received data: %s" % (data,)
+        print "\nserver received data: %s" % (data,)
 
 
 class TestTrickle(unittest.TestCase):
     def test_blah(self):
-        def print_protocol(result):
-            print "print_protocol ---"
-            print result
-            return result
-        def print_failure(f):
-            print f
-            return f
-
-        #factory = TrickleFactory(server)
         server_endpoint = serverFromString(reactor, "tcp:interface=127.0.0.1:8080")
-        server_factory = DummyServerFactory()
+        server_factory = DummyTricklingServerFactory()
         d = server_endpoint.listen(server_factory)
-        d.addCallback(print_protocol)
-        d.addErrback(print_failure)
 
         client_endpoint = clientFromString(reactor, "tcp:127.0.0.1:8080")
         client_factory = DummyClientFactory()
-        print "before connectProtocol"
         d2 = client_endpoint.connect(client_factory)
-        d2.addCallback(print_protocol)
-        d2.addErrback(print_failure)
+
+        def stopListening(listeningPort):
+            return listeningPort.stopListening()    
+        d.addCallback(lambda listeningPort: task.deferLater(reactor, 3, stopListening, listeningPort))
 
         end_d = defer.DeferredList([d,d2])
         def cleanup():
-            print "---- CLEANUP cleanup"
-            d.cancel()
             client_factory.protocol.transport.loseConnection()
-            server_factory.protocol.transport.loseConnection()
+            lost_d = defer.DeferredList([client_factory.protocol.connection_lost_d, server_factory.protocol.connection_lost_d])
+            return lost_d
         end_d.addCallback(lambda ign: task.deferLater(reactor, 3, cleanup))
         return end_d
 
