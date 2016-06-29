@@ -316,24 +316,33 @@ class TestStreamBandwidthListener(TorTestCase):
         assert (circ_avg_bw['bytes_r']/4 < (circ_avg_bw['samples'] * circ_avg_bw['r_bw']) <
                 circ_avg_bw['bytes_r']*2)
 
-    @defer.inlineCallbacks
     def do_fetch(self):
         time_start = time.time()
         path = self.random_path()
         agent = OnionRoutedAgent(reactor, path=path, state=self.tor)
         url = "http://127.0.0.1:{}".format(self.port)
-        request = yield agent.request("GET", url)
-        print request
-        body = yield readBody(request)
-        print body
-        assert len(body) == self.fetch_size
-        circ = [c for c in self.tor.circuits.values() if c.path == path][0]
-        assert isinstance(circ, Circuit)
 
+        d = agent.request("GET", url)
+        def get_request(result):
+            self.request = result
+        d.addCallback(get_request)
+        d.addCallback(lambda ign: readBody(request))
+        def get_body(result):
+            self.body = result
+            assert len(body) == self.fetch_size
+        d.addCallback(get_body)
+        def check_circ(result):
+            circ = [c for c in self.tor.circuits.values() if c.path == path][0]
+            assert isinstance(circ, Circuit)
+        d.addCallback(check_circ)
         # XXX: Wait for circuit to close, then I think we can be sure that
         #      the BW events have been emitted.
-        yield circ.close(ifUnused=True)
-        defer.returnValue({'duration': time.time() - time_start, 'circ': circ})
+        #
+        #task.deferLater(reactor, 5, test_results)
+        d.addCallback(lambda ign: circ.close(ifUnused=True))
+        d.addCallback(lambda ign: {'duration': time.time() - time_start, 'circ': circ})
+        return d
+
 
     def tearDown(self):
         #d = self.current_task_d
