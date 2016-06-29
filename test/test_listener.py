@@ -45,7 +45,7 @@ class TricklingBufferingProtocol(ProtocolWrapper):
         self.buffer = []
         self.connection_lost_d = defer.Deferred()
 
-    def delayedWrite(self, data, offset=0, size=100, delay=.1):
+    def delayedWrite(self, data, offset=0, size=1, delay=.1):
         if offset >= len(data):
             return
         if (offset + size) > len(data) -1:
@@ -217,7 +217,7 @@ class TestStreamBandwidthListener(TorTestCase):
 
     def setUp(self):
         #self.fetch_size = 8*2**20  # 8MB
-        self.fetch_size = 100
+        self.fetch_size = 12
         fetch_size = self.fetch_size
 
 
@@ -255,24 +255,24 @@ class TestStreamBandwidthListener(TorTestCase):
         d.addErrback(err)
         return d
 
-    @defer.inlineCallbacks
     def test_circ_bw(self):
         print "before fetch"
-        r = yield self.do_fetch()
-        print "before bw_events"
-        bw_events = self.stream_bandwidth_listener.circ_bw_events.get(r['circ'])
+        d = self.do_fetch()
+        def test_results(result):
+            print "test_results"
+            bw_events = self.stream_bandwidth_listener.circ_bw_events.get(result['circ'])
+            assert bw_events
+            print "TEST RESULTS: %s" % (bw_events,)
+        d.addCallback(lambda ign: task.deferLater(reactor, 5, test_results))
 
-        #def yo(result):
-        #    print "YOIYOIYOYOYOYOOY"
-        #self.factory.my_protocol.receive_d.addCallback(yo)
-        #assert bw_events
-        print bw_events
         # XXX: why are the counters reversed!? -> See StreamBandwidthListener
         #      docstring.
         # assert self.fetch_size/2 <= sum([x[1] for x in bw_events]) <= self.fetch_size
         #assert sum([x[1] for x in bw_events]) <= self.fetch_size
         # either this is backward, or we wrote more bytes than read?!
         #assert sum([x[2] for x in bw_events]) >= sum([x[1] for x in bw_events])
+        self.current_task_d = d
+        return d
 
     @defer.inlineCallbacks
     def test_stream_bw(self):
@@ -335,7 +335,10 @@ class TestStreamBandwidthListener(TorTestCase):
         yield circ.close(ifUnused=True)
         defer.returnValue({'duration': time.time() - time_start, 'circ': circ})
 
-    @defer.inlineCallbacks
     def tearDown(self):
-        yield super(TestStreamBandwidthListener, self).tearDown()
-        yield self.test_service.stopListening()
+        #d = self.current_task_d
+        d = defer.succeed(None)
+        d.addCallback(lambda ign: super(TestStreamBandwidthListener, self).tearDown())
+        d.addCallback(lambda ign: self.test_service.stopListening())
+        return d
+
