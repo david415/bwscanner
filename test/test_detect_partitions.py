@@ -83,7 +83,14 @@ class PermutationsTests(unittest.TestCase):
 
     def test_to_pair(self):
         n = 5
+        print ""
+        print to_pair(3, 4)
+        print ""
+
         pairs = [to_pair(x, n) for x in range(n*(n-1)/2)]
+        print ""
+        print pairs
+        print ""
         self.failUnlessEqual(pairs, [(0, 1), (0, 2), (0, 3), (0, 4), (1, 2),
                                      (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)])
 
@@ -112,3 +119,21 @@ class PermutationsTests(unittest.TestCase):
         self.failUnless({routers["relay2"], routers["relay3"]} in results)
         self.failUnless({routers["relay2"], routers["relay4"]} in results)
         self.failUnless({routers["relay3"], routers["relay4"]} in results)
+
+    def test_display_permutations(self):
+        class FakeTorState(object):
+            def __init__(self, routers):
+                self.routers = routers
+        routers = {}
+        for i in range(7000):
+            routers["relay%s" % i] = FakeRouter(i)
+
+        tor_state = FakeTorState(routers)
+        circuit_generator = FullyConnected(tor_state, this_partition=0, partitions=10)
+
+        print ""
+        for circuit in circuit_generator:
+            hop1 = circuit[0]
+            hop2 = circuit[1]
+            print "%s -> %s" % (hop1.id_hex, hop2.id_hex)
+
