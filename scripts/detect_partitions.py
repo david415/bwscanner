@@ -49,7 +49,7 @@ def get_router_list_from_file(tor_state, relay_list_file):
         a list of routers (txtorcon Router router object)
     """
     routers = []
-    with open(relays_list_file, "r") as rf:
+    with open(relay_list_file, "r") as rf:
         relay_lines = rf.read()
     for relay_line in relay_lines.split():
         router = tor_state.router_from_id("$" + relay_line)
