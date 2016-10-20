@@ -21,57 +21,27 @@ from txtorcon import TorState
 
 from bwscanner.partition_scan import ProbeAll2HopCircuits
 
-def get_router_list_from_consensus(tor_state, consensus):
-    """
-    arguments
-        tor_state is a txtorcon TorState object
-        consensus_file is a file containing a tor network-status-consensus-3 document
-    returns
-        a list of routers (txtorcon Router router object)
-    """
-    routers = []
-    with open(consensus, 'rb') as consensus_file:
-        for relay in parse_file(consensus_file):
-            if relay is not None and relay.fingerprint is not None:
-                router = tor_state.router_from_id("$" + relay.fingerprint)
-                routers.append(router)
-            if len(routers) == 0:
-                print "failed to parse consensus file"
-                sys.exit(1)
-    return routers
 
-def get_router_list_from_file(tor_state, relay_list_file):
-    """
-    arguments
-        tor_state is a txtorcon TorState object
-        relay_list_file is a file containing one Tor relay fingerprint per line
-    returns
-        a list of routers (txtorcon Router router object)
-    """
+def circuitGeneratorFromFile(circuit_list, tor_state):
     routers = []
-    with open(relay_list_file, "r") as rf:
-        relay_lines = rf.read()
-    for relay_line in relay_lines.split():
-        router = tor_state.router_from_id("$" + relay_line)
-        routers.append(router)
-    return routers
-
+    with open(circuit_list) as f:
+        for line in f:
+            relay1, relay2 = line.split(',')
+            router1 = tor_state.router_from_id("$" + relay1)
+            router2 = tor_state.router_from_id("$" + relay2)
+            yield router1, router2
 
 @click.command()
 @click.option('--tor-control', default=None, type=str, help="tor control port as twisted endpoint descriptor string")
 @click.option('--tor-data', default=None, type=str, help="launch tor data directory")
 @click.option('--log-dir', default="./logs", type=str, help="log directory")
-@click.option('--relay-list', default=None, type=str, help="file containing list of tor relay fingerprints, one per line")
-@click.option('--consensus', default=None, type=str, help="file containing tor consensus document, network-status-consensus-3 1.0")
-@click.option('--secret', default=None, type=str, help="secret")
-@click.option('--partitions', default=None, type=int, help="total number of permuation partitions")
-@click.option('--this-partition', default=None, type=int, help="which partition to scan")
+@click.option('--circuit-list', default=None, type=str, help="file containing list of tor circuits")
 @click.option('--build-duration', default=0.2, type=float, help="circuit build duration")
 @click.option('--circuit-timeout', default=10.0, type=float, help="circuit build timeout")
 @click.option('--prometheus-port', default=None, type=int, help="prometheus port to listen on")
 @click.option('--prometheus-interface', default=None, type=str, help="prometheus interface to listen on")
-def main(tor_control, tor_data, log_dir, relay_list, consensus,
-         secret, partitions, this_partition, build_duration, circuit_timeout, prometheus_port, prometheus_interface):
+def main(tor_control, tor_data, log_dir, circuit_list,
+         build_duration, circuit_timeout, prometheus_port, prometheus_interface):
 
     log.startLogging( sys.stdout )
     def start_tor():
@@ -109,17 +79,10 @@ def main(tor_control, tor_data, log_dir, relay_list, consensus,
         endpoint = clientFromString(reactor, tor_control.encode('utf-8'))
         d = txtorcon.build_tor_connection(endpoint, build_state=True)
 
-    secret_hash = hashlib.sha256(secret).digest()
     def start_probe(tor_state):
-        if consensus is not None:
-            routers = get_router_list_from_consensus(tor_state, consensus)
-        elif relay_list is not None:
-            routers = get_router_list_from_file(tor_state, relay_list)
-        else:
-            pass  # XXX todo: print usage
-
-        probe = ProbeAll2HopCircuits(tor_state, reactor, log_dir, reactor.stop, routers, secret_hash,
-                                     partitions, this_partition, build_duration, circuit_timeout, prometheus_port, prometheus_interface)
+        circuit_generator = circuitGeneratorFromFile(circuit_list, tor_state)
+        probe = ProbeAll2HopCircuits(tor_state, reactor, log_dir, reactor.stop, circuit_generator,
+                                     build_duration, circuit_timeout, prometheus_port, prometheus_interface)
         print "starting scan"
         probe.start()
         def signal_handler(signal, frame):

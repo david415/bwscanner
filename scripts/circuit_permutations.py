@@ -24,6 +24,7 @@ def get_relay_list_from_file(relay_list_file):
         relays.append(relay_line)
     return relays
 
+
 @click.command()
 @click.option('--relay-list', default=None, type=str, help="file containing list of tor relay fingerprints, one per line")
 @click.option('--consensus', default=None, type=str, help="file containing tor consensus document, network-status-consensus-3 1.0")

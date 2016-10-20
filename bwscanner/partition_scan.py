@@ -39,8 +39,8 @@ except ImportError:
 
 class ProbeAll2HopCircuits(object):
 
-    def __init__(self, state, clock, log_dir, stopped, relays, shared_secret, partitions,
-                 this_partition, build_duration, circuit_timeout,
+    def __init__(self, state, clock, log_dir, stopped, circuit_generator,
+                 build_duration, circuit_timeout,
                  prometheus_port=None, prometheus_interface=None):
         """
         state: the txtorcon state object
@@ -48,8 +48,7 @@ class ProbeAll2HopCircuits(object):
         unit tests might set this to a clock object which can time travel for faster testing.
         log_dir: the directory to write log files
         stopped: callable to call when done
-        partitions: the number of partitions to use for processing the set of circuits
-        this_partition: which partition of circuit we will process
+        circuit_generator: generator for producing 2-tuple of txtorcon Router objects
         build_duration: build a new circuit every specified duration
         circuit_timeout: circuit build timeout duration
         """
@@ -57,10 +56,7 @@ class ProbeAll2HopCircuits(object):
         self.clock = clock
         self.log_dir = log_dir
         self.stopped = stopped
-        self.relays = relays
-        self.shared_secret = shared_secret
-        self.partitions = partitions
-        self.this_partition = this_partition
+        self.circuits = circuit_generator
         self.circuit_life_duration = circuit_timeout
         self.circuit_build_duration = build_duration
         self.prometheus_port = prometheus_port
@@ -68,14 +64,6 @@ class ProbeAll2HopCircuits(object):
 
         self.lazy_tail = defer.succeed(None)
         self.tasks = []
-
-        consensus = ""
-        for relay in [str(relay.id_hex) for relay in relays]:
-            consensus += relay + ","
-        consensus_hash = hashlib.sha256(consensus).digest()
-        shared_secret_hash = hashlib.sha256(shared_secret).digest()
-        prng_seed = hashlib.pbkdf2_hmac('sha256', consensus_hash, shared_secret_hash, iterations=1)
-        self.circuits = lazy2HopCircuitGenerator(relays, this_partition, partitions, prng_seed)
 
         # XXX adjust me
         self.result_sink = ResultSink(log_dir, chunk_size=1000)
