@@ -4,6 +4,7 @@ Relays which cannot connect to each other are bad for Tor network health
 and it may indicate that a partitioning attack is being performed.
 """
 import time
+from pympler import summary, muppy
 
 from twisted.internet.error import AlreadyCalled
 from twisted.internet import defer
@@ -90,8 +91,9 @@ class ProbeAll2HopCircuits(object):
         """
         serialized_route = self.serialize_route(route)
 
-        def circuit_build_success(result):
+        def circuit_build_success(circuit):
             self.count_success.inc()
+            circuit.close()
 
         def circuit_build_timeout(f):
             f.trap(CircuitBuildTimedOutError)
@@ -118,7 +120,6 @@ class ProbeAll2HopCircuits(object):
         time_start = self.now()
         d = self.semaphore.run(build_timeout_circuit, self.state, self.clock, route, self.circuit_life_duration)
         self.tasks[serialized_route] = d
-        print "tasks len %s" % len(self.tasks)
         d.addCallback(circuit_build_success)
         d.addErrback(circuit_build_timeout)
         d.addErrback(circuit_build_failure)
@@ -138,12 +139,18 @@ class ProbeAll2HopCircuits(object):
 
     def start(self):
         self.start_prometheus_exportor()
+        self.count = 0
 
         def pop():
             try:
                 route = self.circuits.next()
-                #print self.serialize_route(route)
                 self.build_circuit(route)
+                self.count += 1
+                if self.count % 1000 == 0:
+                    print "tasks len %s" % len(self.tasks)
+                    all_objects = muppy.get_objects()
+                    sum1 = summary.summarize(all_objects)
+                    summary.print_(sum1)
             except StopIteration:
                 self.stop()
             else:
